@@ -1,4 +1,5 @@
 import { ENGINE_VERSION, type SimState } from "./engine";
+import { encodeMessage } from "./comms";
 
 // Fixed tuple order is the serialization contract. Node IDs and neighbor rows
 // are canonical at construction; local maps use explicit numeric node order.
@@ -22,6 +23,14 @@ export function serializeState(state: SimState): string {
     state.world.entrance,
     state.world.adjacency,
     robots,
+    ...(state.transport === undefined
+      ? []
+      : [
+          state.config.communication,
+          state.transport.queue.map(encodeMessage),
+          state.transport.inboxes.map((inbox) => inbox.map(encodeMessage)),
+          state.transport.lastSeq,
+        ]),
   ]);
 }
 

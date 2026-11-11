@@ -1,3 +1,6 @@
+import type { Message, MessageRequest } from "./comms";
+import { inboxView } from "./comms";
+
 export interface LocalMap {
   readonly visited: readonly number[];
   readonly adjacency: Readonly<Partial<Record<number, readonly number[]>>>;
@@ -8,13 +11,16 @@ export interface AgentState {
   readonly knowledge: LocalMap;
 }
 export interface AgentView {
+  readonly tick?: number;
+  readonly inbox?: readonly Message[];
   readonly id: number;
   readonly position: number;
   readonly visited: readonly number[];
   readonly adjacency: LocalMap["adjacency"];
 }
-export type Action =
-  { readonly kind: "wait" } | { readonly kind: "move"; readonly to: number };
+export type Action = (
+  { readonly kind: "wait" } | { readonly kind: "move"; readonly to: number }
+) & { readonly outbound?: readonly MessageRequest[] };
 export type Planner = (view: AgentView, policyDraw: number) => Action;
 
 function sorted(values: Iterable<number>) {
@@ -50,13 +56,19 @@ export function arrive(
   };
 }
 
-export function observe(agent: AgentState): AgentView {
+export function observe(
+  agent: AgentState,
+  inbox?: readonly Message[],
+  tick?: number,
+): AgentView {
   const adjacency: Partial<Record<number, readonly number[]>> = {};
   for (const key of Object.keys(agent.knowledge.adjacency)) {
     const id = Number(key);
     adjacency[id] = Object.freeze([...agent.knowledge.adjacency[id]!]);
   }
   return Object.freeze({
+    ...(inbox === undefined ? {} : { inbox: inboxView(inbox) }),
+    ...(tick === undefined ? {} : { tick }),
     id: agent.id,
     position: agent.position,
     visited: Object.freeze([...agent.knowledge.visited]),

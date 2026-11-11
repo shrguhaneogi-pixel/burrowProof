@@ -9,8 +9,17 @@ import {
 } from "./agent";
 import { createWorld, generateWorld, type Scenario, type World } from "./graph";
 import { draw, streamSeed } from "./rng";
+import {
+  deliverDue,
+  emptyTransport,
+  scheduleOutbound,
+  validateCommunication,
+  type CommunicationConfig,
+  type TransportState,
+  type TransportEvent,
+} from "./comms";
 
-export const ENGINE_VERSION = "1a.1";
+export const ENGINE_VERSION = "1b.2";
 export const foundationPolicy = Object.freeze({
   version: "first-neighbor.1",
   decide: firstNeighbor,
@@ -20,6 +29,7 @@ export interface Policy {
   readonly decide: Planner;
 }
 export interface Config {
+  readonly communication?: CommunicationConfig;
   readonly seed: number;
   readonly scenario: Scenario;
   readonly nodeCount: number;
@@ -29,6 +39,7 @@ interface Robot extends AgentState {
   readonly policyRng: number;
 }
 export interface SimState {
+  readonly transport?: TransportState;
   readonly config: Config;
   readonly world: World;
   readonly agents: readonly Robot[];
@@ -45,7 +56,8 @@ type Outcome =
       reason: "invalid-action" | "unknown-edge" | "missing-edge";
     }
   | { kind: "sensed"; at: number; neighbors: readonly number[] };
-export type SimEvent = Outcome & { tick: number; agentId: number };
+export type SimEvent =
+  (Outcome & { tick: number; agentId: number }) | TransportEvent;
 export interface Transition {
   state: SimState;
   events: SimEvent[];
@@ -57,6 +69,10 @@ export function initialize(
   fixture?: World,
 ): Transition {
   const { seed, scenario, nodeCount, agentCount } = config;
+  const communication =
+    config.communication === undefined
+      ? undefined
+      : validateCommunication(config.communication);
   if (!Number.isInteger(agentCount) || agentCount < 1 || agentCount > 256)
     throw new RangeError("Agent count must be an integer from 1 to 256");
   const world = fixture
@@ -71,7 +87,16 @@ export function initialize(
     policyRng: streamSeed(seed, `policy/${id}`),
   }));
   const state = {
-    config: { seed, scenario, nodeCount, agentCount },
+    config: {
+      seed,
+      scenario,
+      nodeCount,
+      agentCount,
+      ...(communication === undefined ? {} : { communication }),
+    },
+    ...(communication === undefined
+      ? {}
+      : { transport: emptyTransport(agentCount) }),
     world,
     agents,
     tick: 0,
@@ -116,14 +141,23 @@ export function step(
   const tick = state.tick + 1;
   if (!Number.isSafeInteger(tick))
     throw new RangeError("Tick exceeds safe integer range");
+  const delivery = state.transport
+    ? deliverDue(state.transport, tick)
+    : undefined;
   const decisions = [...state.agents]
     .sort((a, b) => a.id - b.id)
     .map((agent) => {
       const sample = draw(agent.policyRng);
+      const view = observe(
+        agent,
+        delivery?.transport.inboxes[agent.id],
+        delivery ? tick : undefined,
+      );
       return {
         agent,
+        view,
         policyRng: sample.state,
-        action: policy.decide(observe(agent), sample.value),
+        action: policy.decide(view, sample.value),
       };
     });
   const events: SimEvent[] = [];
@@ -137,7 +171,33 @@ export function step(
     arrivals.push({ tick, agentId: agent.id, kind: "sensed", at, neighbors });
     return { ...arrive(agent, at, neighbors), policyRng };
   });
-  return { state: { ...state, tick, agents }, events: events.concat(arrivals) };
+  events.push(...arrivals);
+  let transport = delivery?.transport;
+  if (transport && state.config.communication) {
+    const outgoing = scheduleOutbound(
+      transport,
+      state.config.communication,
+      state.world,
+      agents.map((agent) => agent.position),
+      decisions.map(({ view, action }) => ({
+        view,
+        requests: action?.outbound ?? [],
+      })),
+      tick,
+      state.config.seed,
+    );
+    transport = outgoing.transport;
+    events.push(...outgoing.events);
+  }
+  return {
+    state: {
+      ...state,
+      tick,
+      agents,
+      ...(transport === undefined ? {} : { transport }),
+    },
+    events: [...(delivery?.events ?? []), ...events],
+  };
 }
 
 export function runTicks(

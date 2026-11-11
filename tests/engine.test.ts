@@ -265,9 +265,9 @@ it("pins the versioned singleton serialization and checksum", () => {
     { tick: 0, agentId: 0, kind: "sensed", at: 0, neighbors: [] },
   ]);
   expect(serializeState(state)).toBe(
-    '["1a.1","first-neighbor.1",[0,"branching",1,1],0,0,[[]],[[0,0,1762688832,[0],[[0,[]]]]]]',
+    '["1b.2","first-neighbor.1",[0,"branching",1,1],0,0,[[]],[[0,0,1762688832,[0],[[0,[]]]]]]',
   );
-  expect(stateHash(state)).toBe("78ce3d53");
+  expect(stateHash(state)).toBe("14a0b7a7");
   expect(stateHash(step(state).state)).not.toBe(stateHash(state));
 });
 it("records a malformed move without contaminating the next state", () => {
