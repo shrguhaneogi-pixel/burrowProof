@@ -2,7 +2,7 @@
 import type { AgentView } from "./agent";
 import type { World } from "./graph";
 import { draw, streamSeed } from "./rng";
-import { DEFAULT_TTL } from "./reservations";
+import { copyAnnouncement, DEFAULT_TTL } from "./reservations";
 
 export type TransportEvent =
   | {
@@ -78,11 +78,13 @@ export function deliverDue(
   const inboxes: Message[][] = state.inboxes.map(() => []);
   const queue: Message[] = [];
   const events: TransportEvent[] = [];
-  for (const message of [...state.queue].sort(compare)) {
-    if (message.dueTick > tick) {
-      queue.push(message);
+  for (const queued of [...state.queue].sort(compare)) {
+    if (queued.dueTick > tick) {
+      queue.push(queued);
       continue;
     }
+    // Events from a restored queue use the same field order as fresh sends.
+    const message = copyMessage(queued);
     if (failedRecipients.has(message.to)) {
       events.push({
         kind: "message-dropped",
@@ -107,14 +109,7 @@ export function deliverDue(
 }
 
 export function inboxView(messages: readonly Message[]): readonly Message[] {
-  return Object.freeze(
-    messages.map((message) =>
-      Object.freeze({
-        ...message,
-        payload: copyPayload(message.payload),
-      }),
-    ),
-  );
+  return Object.freeze(messages.map(copyMessage));
 }
 
 function withinRange(
@@ -209,7 +204,18 @@ function copyPayload(payload: Payload): Payload {
       node: payload.node,
       neighbors: Object.freeze([...payload.neighbors]),
     });
-  return Object.freeze({ ...payload });
+  return copyAnnouncement(payload);
+}
+
+function copyMessage(message: Message): Message {
+  return Object.freeze({
+    from: message.from,
+    to: message.to,
+    seq: message.seq,
+    sentTick: message.sentTick,
+    dueTick: message.dueTick,
+    payload: copyPayload(message.payload),
+  });
 }
 
 function validPayload(
@@ -289,13 +295,13 @@ export function scheduleOutbound(
       const dueTick = tick + config.delay;
       if (!Number.isSafeInteger(dueTick))
         throw new RangeError("Delivery tick exceeds safe integer range");
-      const message: Message = Object.freeze({
+      const message = copyMessage({
         from: agentId,
         to: request.to,
         seq,
         sentTick: tick,
         dueTick,
-        payload: copyPayload(request.payload),
+        payload: request.payload,
       });
       const bytes = messageBytes(message);
       if (bytes > config.maxBytes) {

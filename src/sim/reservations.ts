@@ -34,7 +34,7 @@ function copyClaim(claim: Claim): Claim {
     expiresTick: claim.expiresTick,
   });
 }
-function copyAnnouncement(payload: Announcement): Announcement {
+export function copyAnnouncement(payload: Announcement): Announcement {
   return payload.kind === "claim"
     ? copyClaim(payload)
     : Object.freeze({
