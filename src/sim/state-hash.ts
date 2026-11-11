@@ -1,5 +1,25 @@
 import { ENGINE_VERSION, type SimState } from "./engine";
 import { encodeMessage } from "./comms";
+import type { Announcement } from "./comms";
+import type { EfrState } from "./reservations";
+
+function signalTuple(signal: Announcement | null) {
+  if (!signal) return null;
+  const identity = [signal.kind, signal.target, signal.issuedTick];
+  return signal.kind === "claim" ? [...identity, signal.expiresTick] : identity;
+}
+function reservationTuple(state: EfrState) {
+  return [
+    signalTuple(state.own),
+    state.received.map(
+      (entry) =>
+        entry && [entry.seq, entry.latestIssue, signalTuple(entry.claim)],
+    ),
+    state.pending.map((row) => row.map(signalTuple)),
+    state.nextSeq,
+    state.cursor,
+  ];
+}
 
 // Fixed tuple order is the serialization contract. Node IDs and neighbor rows
 // are canonical at construction; local maps use explicit numeric node order.
@@ -21,6 +41,7 @@ export function serializeState(state: SimState): string {
         edges,
         agent.lifecycle.status,
         agent.lifecycle.status === "failed" ? agent.lifecycle.tick : null,
+        ...(agent.efr ? [reservationTuple(agent.efr)] : []),
       ];
     });
   return JSON.stringify([
@@ -35,6 +56,7 @@ export function serializeState(state: SimState): string {
         failure.tick,
         failure.agentId,
       ]),
+      ...(state.config.efr ? [state.config.efr.ttl] : []),
     ],
     state.tick,
     state.world.entrance,

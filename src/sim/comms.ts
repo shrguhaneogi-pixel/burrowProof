@@ -2,6 +2,7 @@
 import type { AgentView } from "./agent";
 import type { World } from "./graph";
 import { draw, streamSeed } from "./rng";
+import { DEFAULT_TTL } from "./reservations";
 
 export type TransportEvent =
   | {
@@ -181,6 +182,8 @@ export function validAnnouncement(
   ttl: number,
 ): boolean {
   if (
+    !Number.isSafeInteger(sentTick) ||
+    sentTick < 0 ||
     !Number.isSafeInteger(payload.target) ||
     payload.target < 0 ||
     !Number.isSafeInteger(payload.issuedTick) ||
@@ -220,7 +223,11 @@ function validPayload(
   return (
     validAnnouncement(payload, tick, ttl) &&
     view.adjacency[payload.target] !== undefined &&
-    (payload.kind === "release" || !view.visited.includes(payload.target))
+    (payload.kind === "release" ||
+      (!view.visited.includes(payload.target) &&
+        (payload.issuedTick === tick ||
+          (view.efr?.memory.own?.issuedTick === payload.issuedTick &&
+            view.efr.memory.own.target === payload.target))))
   );
 }
 
@@ -232,7 +239,7 @@ export function scheduleOutbound(
   senders: readonly { view: AgentView; requests: readonly MessageRequest[] }[],
   tick: number,
   seed: number,
-  ttl = 16,
+  ttl = DEFAULT_TTL,
 ): { transport: TransportState; events: TransportEvent[] } {
   const queue = [...state.queue],
     lastSeq = [...state.lastSeq];

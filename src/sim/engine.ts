@@ -10,6 +10,13 @@ import {
 import { createWorld, generateWorld, type Scenario, type World } from "./graph";
 import { draw, streamSeed } from "./rng";
 import {
+  DEFAULT_TTL,
+  emptyEfr,
+  normalizeTtl,
+  snapshotEfr,
+  type EfrState,
+} from "./reservations";
+import {
   deliverDue,
   emptyTransport,
   scheduleOutbound,
@@ -19,16 +26,18 @@ import {
   type TransportEvent,
 } from "./comms";
 
-export const ENGINE_VERSION = "1b.3";
+export const ENGINE_VERSION = "1b.4";
 export const foundationPolicy = Object.freeze({
   version: "first-neighbor.1",
   decide: firstNeighbor,
 });
 export interface Policy {
+  readonly usesEfr?: true;
   readonly version: string;
   readonly decide: Planner;
 }
 export interface Config {
+  readonly efr?: { readonly ttl: number };
   readonly failures?: readonly Failure[];
   readonly communication?: CommunicationConfig;
   readonly seed: number;
@@ -44,6 +53,7 @@ type Lifecycle =
   | { readonly status: "active" }
   | { readonly status: "failed"; readonly tick: number };
 interface Robot extends AgentState {
+  readonly efr?: EfrState;
   readonly lifecycle: Lifecycle;
   readonly policyRng: number;
 }
@@ -132,6 +142,10 @@ export function initialize(
   if (!Number.isInteger(agentCount) || agentCount < 1 || agentCount > 256)
     throw new RangeError("Agent count must be an integer from 1 to 256");
   const failures = normalizeFailures(config.failures ?? [], agentCount);
+  const efr =
+    policy.usesEfr || config.efr
+      ? Object.freeze({ ttl: normalizeTtl(config.efr?.ttl ?? DEFAULT_TTL) })
+      : undefined;
   const world = fixture
     ? createWorld(fixture.adjacency)
     : generateWorld(seed, scenario, nodeCount);
@@ -140,6 +154,7 @@ export function initialize(
   const at = world.entrance,
     neighbors = world.adjacency[at]!;
   const unsensed: Robot[] = Array.from({ length: agentCount }, (_, id) => ({
+    ...(policy.usesEfr ? { efr: emptyEfr(agentCount) } : {}),
     id,
     position: at,
     knowledge: { visited: [], adjacency: {} },
@@ -159,6 +174,7 @@ export function initialize(
       nodeCount,
       agentCount,
       failures,
+      ...(efr ? { efr } : {}),
       ...(communication === undefined ? {} : { communication }),
     },
     ...(communication === undefined
@@ -210,6 +226,8 @@ export function step(
 ): Transition {
   if (policy.version !== state.algorithmVersion)
     throw new Error("Policy version mismatch");
+  if (Boolean(policy.usesEfr) !== Boolean(state.agents[0]?.efr))
+    throw new Error("Policy state mismatch");
   const tick = state.tick + 1;
   if (!Number.isSafeInteger(tick))
     throw new RangeError("Tick exceeds safe integer range");
@@ -229,7 +247,15 @@ export function step(
       const view = observe(
         agent,
         delivery?.transport.inboxes[agent.id],
-        delivery ? tick : undefined,
+        delivery || agent.efr ? tick : undefined,
+        agent.efr && state.config.efr
+          ? {
+              memory: agent.efr,
+              ttl: state.config.efr.ttl,
+              rosterSize: state.config.agentCount,
+              outboundLimit: state.config.communication?.maxOutbound ?? 0,
+            }
+          : undefined,
       );
       return {
         agent,
@@ -243,14 +269,22 @@ export function step(
   const updates = new Map(
     decisions.map(({ agent, policyRng, action }): [number, Robot] => {
       const outcome = validate(agent, action, state.world);
+      const nextRobot = {
+        ...agent,
+        policyRng,
+        ...(agent.efr && action?.efr
+          ? { efr: snapshotEfr(action.efr, state.config.agentCount) }
+          : {}),
+      };
       events.push({ tick, agentId: agent.id, ...outcome });
-      if (outcome.kind !== "moved") return [agent.id, { ...agent, policyRng }];
+      if (outcome.kind !== "moved") return [agent.id, nextRobot];
       const at = outcome.to,
         neighbors = state.world.adjacency[at]!;
       arrivals.push({ tick, agentId: agent.id, kind: "sensed", at, neighbors });
+      const moved = arrive(agent, at, neighbors);
       return [
         agent.id,
-        { ...agent, ...arrive(agent, at, neighbors), policyRng },
+        { ...nextRobot, position: moved.position, knowledge: moved.knowledge },
       ];
     }),
   );
@@ -269,6 +303,7 @@ export function step(
       })),
       tick,
       state.config.seed,
+      state.config.efr?.ttl,
     );
     transport = outgoing.transport;
     events.push(...outgoing.events);

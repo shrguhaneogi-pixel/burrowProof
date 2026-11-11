@@ -1,5 +1,6 @@
 import type { Message, MessageRequest } from "./comms";
 import { inboxView } from "./comms";
+import { snapshotEfr, type EfrState, type EfrView } from "./reservations";
 
 export interface LocalMap {
   readonly visited: readonly number[];
@@ -11,6 +12,7 @@ export interface AgentState {
   readonly knowledge: LocalMap;
 }
 export interface AgentView {
+  readonly efr?: EfrView;
   readonly tick?: number;
   readonly inbox?: readonly Message[];
   readonly id: number;
@@ -20,7 +22,7 @@ export interface AgentView {
 }
 export type Action = (
   { readonly kind: "wait" } | { readonly kind: "move"; readonly to: number }
-) & { readonly outbound?: readonly MessageRequest[] };
+) & { readonly outbound?: readonly MessageRequest[]; readonly efr?: EfrState };
 export type Planner = (view: AgentView, policyDraw: number) => Action;
 
 function sorted(values: Iterable<number>) {
@@ -60,6 +62,7 @@ export function observe(
   agent: AgentState,
   inbox?: readonly Message[],
   tick?: number,
+  efr?: EfrView,
 ): AgentView {
   const adjacency: Partial<Record<number, readonly number[]>> = {};
   for (const key of Object.keys(agent.knowledge.adjacency)) {
@@ -67,6 +70,14 @@ export function observe(
     adjacency[id] = Object.freeze([...agent.knowledge.adjacency[id]!]);
   }
   return Object.freeze({
+    ...(efr
+      ? {
+          efr: Object.freeze({
+            ...efr,
+            memory: snapshotEfr(efr.memory, efr.rosterSize),
+          }),
+        }
+      : {}),
     ...(inbox === undefined ? {} : { inbox: inboxView(inbox) }),
     ...(tick === undefined ? {} : { tick }),
     id: agent.id,
