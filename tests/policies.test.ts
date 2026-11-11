@@ -8,10 +8,10 @@ import {
   type SimEvent,
 } from "../src/sim/engine";
 import { createWorld, type Scenario } from "../src/sim/graph";
-import { randomWalkPolicy } from "../src/sim/policies";
+import { randomWalkPolicy, nearestFrontierPolicy } from "../src/sim/policies";
 import { serializeState, stateHash } from "../src/sim/state-hash";
 
-const policies = [randomWalkPolicy];
+const policies = [randomWalkPolicy, nearestFrontierPolicy];
 const families: Scenario[] = ["branching", "loop-heavy", "bottleneck-heavy"];
 const seeds = Array.from({ length: 200 }, (_, seed) => seed);
 const cases = families.flatMap((scenario) =>
@@ -49,10 +49,88 @@ it("random walk waits without neighbors and uses its sole available edge", () =>
   ).toEqual({ kind: "move", to: 1 });
 });
 
+it.each([
+  {
+    name: "distance takes precedence over target ID",
+    position: 0,
+    visited: [0, 1],
+    adjacency: { 0: [1, 9], 1: [0, 2], 2: [1], 9: [0] },
+    action: { kind: "move", to: 9 },
+  },
+  {
+    name: "lowest frontier ID wins within the same distance",
+    position: 0,
+    visited: [0, 1, 2],
+    adjacency: { 0: [2, 1], 1: [0, 8], 2: [0, 3], 3: [2], 8: [1] },
+    action: { kind: "move", to: 2 },
+  },
+  {
+    name: "ordered BFS resolves equal routes to the same frontier",
+    position: 0,
+    visited: [0, 1, 2],
+    adjacency: { 0: [2, 1], 1: [0, 7], 2: [0, 7], 7: [2, 1] },
+    action: { kind: "move", to: 1 },
+  },
+  {
+    name: "backtrack along a visited corridor",
+    position: 3,
+    visited: [0, 1, 3],
+    adjacency: { 0: [1, 2], 1: [0, 3], 2: [0], 3: [1] },
+    action: { kind: "move", to: 1 },
+  },
+  {
+    name: "wait when the only frontier is disconnected",
+    position: 0,
+    visited: [0],
+    adjacency: { 0: [], 4: [] },
+    action: { kind: "wait" },
+  },
+  {
+    name: "wait on an exhausted local map",
+    position: 0,
+    visited: [0, 1],
+    adjacency: { 0: [1], 1: [0] },
+    action: { kind: "wait" },
+  },
+  {
+    name: "wait with missing local adjacency",
+    position: 0,
+    visited: [0],
+    adjacency: {},
+    action: { kind: "wait" },
+  },
+])(
+  "nearest frontier will $name",
+  ({ position, visited, adjacency, action }) => {
+    const view: AgentView = { id: 0, position, visited, adjacency };
+    const snapshot = JSON.stringify(view);
+    expect(nearestFrontierPolicy.decide(view, 0)).toEqual(action);
+    expect(nearestFrontierPolicy.decide(view, 0xffffffff)).toEqual(action);
+    expect(JSON.stringify(view)).toBe(snapshot);
+  },
+);
+
 for (const policy of policies) {
   describe(policy.version, () => {
     it("exports a frozen policy", () =>
       expect(Object.isFrozen(policy)).toBe(true));
+
+    it("keeps agent zero's route independent of the presence of other agents", () => {
+      const config = {
+        seed: 42,
+        scenario: "loop-heavy" as const,
+        nodeCount: 10,
+        agentCount: 1,
+      };
+      const alone = initialize(config, policy).state;
+      const together = initialize({ ...config, agentCount: 3 }, policy).state;
+      const soloRun = runTicks(alone, 25, policy);
+      const swarmRun = runTicks(together, 25, policy);
+      expect(swarmRun.events.filter((event) => event.agentId === 0)).toEqual(
+        soloRun.events,
+      );
+      expect(swarmRun.state.agents[0]).toEqual(soloRun.state.agents[0]);
+    });
 
     it.each(cases)(
       "preserves I2/I3/I8 for $scenario seed=$seed",
