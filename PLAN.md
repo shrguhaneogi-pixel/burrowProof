@@ -9,7 +9,7 @@
 | P1B.1 · Exploration baselines | Complete | Locality, movement, repeatability and batching checks below |
 | P1B.2 · Bounded transport | Complete | Scoped transport checks below |
 | P1B.3 · Robot failures | Complete | Permanent scheduled faults and message lifecycle checks below |
-| P1B.4 · EFR | Complete | Local leases, expiry, conflict and failure recovery checks below |
+| P1B.4 · EFR | Complete, independently audited | Local claim provenance, failure recovery and byte-identical replay checks below |
 | P1B · Exploration and coordination | In progress | No-expiry ablation and metrics remain pending |
 | P2 · Comms, failures, EFR, metrics, replay | Pending | I1–I8, at least 200 seeds, repeatable hash |
 | P3 · Mission Control | Pending | Main-path E2E, telemetry agreement, desktop/tablet/mobile captures |
@@ -84,3 +84,14 @@ OBSERVED-RUNTIME: `python <system-skill-creator>/scripts/quick_validate.py .agen
 - User work discovered on resume: index.html, package.json (dev port), and .vscode/mcp.json. These paths were excluded from EFR commits. Current npm run lint exits 1 solely for index.html formatting. An isolated HEAD-plus-EFR-tests snapshot passed npm run lint (exit 0). The current build includes the independent user HTML edits. Their visual behavior was not inspected as part of EFR.
 - Status: P1B.4 and its scoped I6 expiry/recovery checks are complete. No comparative performance result is established. No-expiry ablation, I7 metrics, blackouts, recovery, validated replay imports, maximum-scale performance, cross-browser execution, visualization and deployment remain pending. JSON continuation checks cover trusted current-version state.
 - NEXT: Phase 1B.5. Isolate expiry behavior using the same routing, scoring, transport and state model, retain a finite experiment tick cap, and expose incomplete runs honestly.
+
+## Phase 1B.4 independent audit
+
+- **VERIFIED-REPO** · Used the project simulation-audit skill on `05e591a`. Two corrections restore the existing 1b.4 replay encoding for equivalent trusted JSON snapshots.
+- **OBSERVED-RUNTIME** · At seed 3 with six claims in flight, reversing the radio settings' field order changed the tick-1 checksum from `0873984e` to `710ea04e`. After `e58d4f7`, both snapshots produced `0873984e` at tick 1 and `b99ee82f` at tick 11.
+- **OBSERVED-RUNTIME** · Reordering a queued envelope and its payload changed the first delivered event's bytes at tick 3. Three regression cases failed before `1954018` and passed afterward, covering observations, claims, releases and failed-recipient drops. The normal-order delivery bytes are pinned in `tests/transport-replay.test.ts`.
+- **OBSERVED-RUNTIME** · `7b5cf12` traces each claim to the issuer's own frontier and each receipt to a delivered packet. On a fork with one send per tick, robot 2 switched goals at tick 9 and robot 1 at tick 10. Interleaved runs on different hidden graphs had identical planner inputs and actions through tick 11. Sensing the changed edge distinguished the views at tick 12.
+- **OBSERVED-RUNTIME** · An owner issued a lease at tick 6 and failed at tick 7. Delivery at tick 9 blocked the survivor until tick 10. Delivery at tick 10 created no active claim. In a separate two-issuer fixture with a lost release and a wrong-issuer release, the survivor waited on ticks 2–5 and moved at tick 6 when the last lease expired.
+- **OBSERVED-RUNTIME** · A Node comparison against `git show 088800d:src/sim/…` matched final states and event bytes for both baseline policies in 72 runs (seeds 0–11, three graph families, 14 nodes, three agents, 32 ticks). Another 36 EFR runs matched event bytes, states and hashes across JSON snapshots with every object reordered, batches of 1/0/4/3/8 ticks, 35% loss and a scheduled failure.
+- **OBSERVED-RUNTIME** · `npm.cmd test -- tests/efr-audit.test.ts tests/efr.test.ts tests/transport-replay.test.ts` passed 70 tests. `npm.cmd test` passed 2,873 tests. Both exited 0, as did `npm.cmd run typecheck`, `npm.cmd run build` and `git diff --check`. `npm.cmd run lint` exited 1 in the workspace on the pre-existing `index.html` formatting and 0 in clean checkouts of the staged changes.
+- **NOT VERIFIED** · These fixtures establish recovery after the last outstanding lease expires. Continually renewed claims, general mission completion, cross-browser replay and comparative exploration performance remain outside this gate. Phase 1B.5 remains pending.
