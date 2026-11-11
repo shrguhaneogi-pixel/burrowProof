@@ -4,6 +4,54 @@ import { initialize, step, runTicks, type Policy } from "../src/sim/engine";
 import { createWorld, type Scenario } from "../src/sim/graph";
 import type { AgentView } from "../src/sim/agent";
 import { randomWalkPolicy, nearestFrontierPolicy } from "../src/sim/policies";
+import { validAnnouncement, type Announcement } from "../src/sim/comms";
+
+it.each([
+  [
+    { kind: "claim", target: 7, issuedTick: 2, expiresTick: 18 },
+    '[0,1,4,3,4,"claim",7,2,18]',
+  ],
+  [{ kind: "release", target: 7, issuedTick: 2 }, '[0,1,4,3,4,"release",7,2]'],
+] as const)(
+  "accounts for the tagged reservation envelope",
+  (payload, encoded) => {
+    const message = {
+      from: 0,
+      to: 1,
+      seq: 4,
+      sentTick: 3,
+      dueTick: 4,
+      payload,
+    };
+    expect(encodeMessage(message)).toBe(encoded);
+    expect(messageBytes(message)).toBe(Buffer.byteLength(encoded));
+  },
+);
+
+it("checks lease timestamps, exact TTL, discriminator fields and overflow", () => {
+  const claim = {
+    kind: "claim",
+    target: 1,
+    issuedTick: 2,
+    expiresTick: 18,
+  } as const;
+  expect(validAnnouncement(claim, 17, 16)).toBe(true);
+  expect(validAnnouncement(claim, 18, 16)).toBe(false);
+  const malformed: Announcement[] = [
+    { ...claim, target: -1 },
+    { ...claim, issuedTick: 1.5 },
+    { ...claim, issuedTick: 5 },
+    { ...claim, expiresTick: 99 },
+    {
+      ...claim,
+      issuedTick: Number.MAX_SAFE_INTEGER,
+      expiresTick: Number.MAX_SAFE_INTEGER + 16,
+    },
+    Object.assign({ ...claim }, { issuer: 5 }),
+  ];
+  for (const payload of malformed)
+    expect(validAnnouncement(payload, 4, 16)).toBe(false);
+});
 import { serializeState, stateHash } from "../src/sim/state-hash";
 import type { MessageRequest } from "../src/sim/comms";
 
@@ -166,8 +214,8 @@ it("rejects duplicates, invalid recipients, unauthorized facts and excess outbou
     },
     {
       ...request(view, 1, 4),
-      payload: { ...request(view, 1, 4).payload, hidden: 88 },
-    } as MessageRequest,
+      payload: Object.assign({}, request(view, 1, 4).payload, { hidden: 88 }),
+    },
     request(view, 1, -1),
     request(view, 1, 5),
   ];
@@ -308,12 +356,14 @@ it("detaches and freezes inboxes and validates payloads against pre-move sensing
   const view = seen.find((v) => v.id === 1 && v.tick === 2)!;
   const delivered = second.state.transport!.inboxes[1]![0]!;
   expect(view.inbox![0]).not.toBe(delivered);
-  expect(view.inbox![0]!.payload.neighbors).not.toBe(
-    delivered.payload.neighbors,
-  );
-  expect(() =>
-    Object.assign(view.inbox![0]!.payload.neighbors, { 0: 99 }),
-  ).toThrow();
+  const payload = view.inbox![0]!.payload;
+  if (
+    payload.kind !== "observation" ||
+    delivered.payload.kind !== "observation"
+  )
+    throw new Error("Expected sensed row");
+  expect(payload.neighbors).not.toBe(delivered.payload.neighbors);
+  expect(() => Object.assign(payload.neighbors, { 0: 99 })).toThrow();
   expect(serializeState(first.state)).toBe(before);
   expect(Object.keys(view).sort()).toEqual([
     "adjacency",

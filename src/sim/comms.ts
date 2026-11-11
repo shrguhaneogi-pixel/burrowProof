@@ -110,10 +110,7 @@ export function inboxView(messages: readonly Message[]): readonly Message[] {
     messages.map((message) =>
       Object.freeze({
         ...message,
-        payload: Object.freeze({
-          ...message.payload,
-          neighbors: Object.freeze([...message.payload.neighbors]),
-        }),
+        payload: copyPayload(message.payload),
       }),
     ),
   );
@@ -142,7 +139,10 @@ function withinRange(
   return false;
 }
 
-function validPayload(payload: ObservationPayload, view: AgentView): boolean {
+function validObservation(
+  payload: ObservationPayload,
+  view: AgentView,
+): boolean {
   if (
     !payload ||
     payload.kind !== "observation" ||
@@ -161,6 +161,69 @@ function validPayload(payload: ObservationPayload, view: AgentView): boolean {
   );
 }
 
+export interface Claim {
+  readonly kind: "claim";
+  readonly target: number;
+  readonly issuedTick: number;
+  readonly expiresTick: number;
+}
+export interface Release {
+  readonly kind: "release";
+  readonly target: number;
+  readonly issuedTick: number;
+}
+export type Announcement = Claim | Release;
+export type Payload = ObservationPayload | Announcement;
+
+export function validAnnouncement(
+  payload: Announcement,
+  sentTick: number,
+  ttl: number,
+): boolean {
+  if (
+    !Number.isSafeInteger(payload.target) ||
+    payload.target < 0 ||
+    !Number.isSafeInteger(payload.issuedTick) ||
+    payload.issuedTick < 0 ||
+    payload.issuedTick > sentTick
+  )
+    return false;
+  const keys = Object.keys(payload).sort().join(",");
+  if (payload.kind === "release") return keys === "issuedTick,kind,target";
+  return (
+    payload.kind === "claim" &&
+    keys === "expiresTick,issuedTick,kind,target" &&
+    Number.isSafeInteger(payload.expiresTick) &&
+    payload.expiresTick === payload.issuedTick + ttl &&
+    sentTick < payload.expiresTick
+  );
+}
+
+function copyPayload(payload: Payload): Payload {
+  if (payload.kind === "observation")
+    return Object.freeze({
+      kind: payload.kind,
+      node: payload.node,
+      neighbors: Object.freeze([...payload.neighbors]),
+    });
+  return Object.freeze({ ...payload });
+}
+
+function validPayload(
+  payload: Payload,
+  view: AgentView,
+  tick: number,
+  ttl: number,
+): boolean {
+  if (!payload) return false;
+  if (payload.kind === "observation") return validObservation(payload, view);
+  return (
+    validAnnouncement(payload, tick, ttl) &&
+    view.adjacency[payload.target] !== undefined &&
+    (payload.kind === "release" || !view.visited.includes(payload.target))
+  );
+}
+
 export function scheduleOutbound(
   state: TransportState,
   config: CommunicationConfig,
@@ -169,6 +232,7 @@ export function scheduleOutbound(
   senders: readonly { view: AgentView; requests: readonly MessageRequest[] }[],
   tick: number,
   seed: number,
+  ttl = 16,
 ): { transport: TransportState; events: TransportEvent[] } {
   const queue = [...state.queue],
     lastSeq = [...state.lastSeq];
@@ -211,7 +275,7 @@ export function scheduleOutbound(
         reject(seq, "invalid-recipient");
         continue;
       }
-      if (!validPayload(request.payload, view)) {
+      if (!validPayload(request.payload, view, tick, ttl)) {
         reject(seq, "unauthorized-payload");
         continue;
       }
@@ -224,11 +288,7 @@ export function scheduleOutbound(
         seq,
         sentTick: tick,
         dueTick,
-        payload: Object.freeze({
-          kind: "observation",
-          node: request.payload.node,
-          neighbors: Object.freeze([...request.payload.neighbors]),
-        }),
+        payload: copyPayload(request.payload),
       });
       const bytes = messageBytes(message);
       if (bytes > config.maxBytes) {
@@ -282,7 +342,7 @@ export interface ObservationPayload {
 export interface MessageRequest {
   readonly to: number;
   readonly seq: number;
-  readonly payload: ObservationPayload;
+  readonly payload: Payload;
 }
 export interface Message extends MessageRequest {
   readonly from: number;
@@ -304,16 +364,25 @@ export interface TransportState {
 }
 
 export function encodeMessage(message: Message): string {
-  return JSON.stringify([
+  const body = message.payload;
+  const header = [
     message.from,
     message.to,
     message.seq,
     message.sentTick,
     message.dueTick,
-    message.payload.kind,
-    message.payload.node,
-    message.payload.neighbors,
-  ]);
+    body.kind,
+  ];
+  if (body.kind === "observation")
+    return JSON.stringify([...header, body.node, body.neighbors]);
+  if (body.kind === "claim")
+    return JSON.stringify([
+      ...header,
+      body.target,
+      body.issuedTick,
+      body.expiresTick,
+    ]);
+  return JSON.stringify([...header, body.target, body.issuedTick]);
 }
 
 // Fixed names, integer IDs and integer neighbors make the tuple ASCII-only.
