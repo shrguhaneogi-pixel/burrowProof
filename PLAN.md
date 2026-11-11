@@ -6,7 +6,8 @@
 | --- | --- | --- |
 | P0 · Discovery and guardrails | Complete | See verification below |
 | P1A · Engine foundation | Complete | I1–I3 and I8 tested on 200 fixed seeds, gates below |
-| P1B · Exploration and coordination | Pending | Random and greedy policies, communication, failures (I5), reservations and metrics |
+| P1B.1 · Exploration baselines | Complete | Locality, movement, repeatability and batching checks below |
+| P1B · Exploration and coordination | In progress | Communication, failures (I5), reservations and metrics remain pending |
 | P2 · Comms, failures, EFR, metrics, replay | Pending | I1–I8, at least 200 seeds, repeatable hash |
 | P3 · Mission Control | Pending | Main-path E2E, telemetry agreement, desktop/tablet/mobile captures |
 | P4 · Lab | Pending | Worker batches, matched seeds, DNF fixtures, bounded imports |
@@ -68,4 +69,15 @@ OBSERVED-RUNTIME: `python <system-skill-creator>/scripts/quick_validate.py .agen
 - OBSERVED-RUNTIME: final `npm run typecheck`, `npm run lint`, `npm test` (1,023 cases, including the six original boundary tests), `npm run build` and `npm run test:e2e` (3 Chromium title-page regressions) exited 0. Test processes emitted the previously observed terminal-color warning.
 - Security tracking: baseline checks resolved minimatch 10.2.6 through ESLint, @eslint/config-array and @typescript-eslint/typescript-estree. Their 10.x constraints exclude the advisory's fixed 11.0.1 release. npm reported 10 moderate development findings and zero production findings. Recheck upstream compatibility when updating tooling.
 - NOT VERIFIED: I4 message semantics, I5 failed agents, I6 claim expiry and I7 event-derived metrics. Cross-browser engine determinism and comparative policy performance are also pending.
-- NEXT: add random and nearest-frontier planners behind AgentView, then bounded comms and failure schedules, EFR/ablation, and independently checked metrics. These P1B tasks cover the coordination part of the original P2 milestone. Complete replay validation before marking that broader milestone complete.
+- P1A handoff commit: `b355ec7`.
+
+## Phase 1B.1 — exploration baselines
+
+- VERIFIED-REPO: discovery found clean main at `b355ec7`, aligned with origin/main. `b934d62` adds random walk and `4300887` adds nearest frontier in src/sim/policies.ts. Both frozen Policy objects work through initialize, step and runTicks.
+- Policy semantics: random-walk.1 sorts local neighbors and uses floor(draw / 2^32 × degree). nearest-frontier.1 treats known unvisited nodes as frontiers. Ordered BFS selects shortest distance, then lowest target ID, with the first discovered equal-length route. Both wait when no eligible local action exists. Only evaluator code can determine global completion.
+- SKILLS: used the existing burrowproof-simulation-audit instructions for pre-move edge checks, paired hidden-world traces, and fresh-run/batch comparisons.
+- OBSERVED-RUNTIME: random-walk stage passed 805 focused cases and 1,828 total tests. Final `npm test -- tests/policies.test.ts` passed 1,615 cases. Final `npm test` passed all 2,638 cases, including the original 1,023. Both commits passed `npm run typecheck`, `npm run lint`, `npm run build` and `git diff --check`. Typecheck initially exposed a contextual typing issue with Object.freeze, corrected with its supported Policy type argument before the random-walk commit.
+- OBSERVED-RUNTIME: each policy ran seeds 0–199 on all three graph families, with 1–8 nodes and 1–3 agents. Random walk ran 64 ticks per case, allowing incomplete exploration. Nearest frontier visited every node within N × (N−1) ticks and then waited in all tested cases. Fresh runs and uneven batches containing a zero-length batch matched serialized events, states and hashes.
+- OBSERVED-RUNTIME: 200 paired-world canaries per policy checked actual planner inputs and actions until changed topology was sensed. Another agent waiting at the entrance retained its private observation. Focused cases checked draw endpoints, stable target/path ties, backtracking, disconnected frontiers, observation immutability and independence from other agents' presence.
+- NOT VERIFIED: behavior at maximum graph/agent limits, cross-browser engine determinism, performance comparisons and I4–I7 remain pending. The development-only minimatch advisory above remains tracked. These runs are correctness checks and establish no comparative performance claim.
+- NEXT: P1B.2 bounded communication through the existing tick, with explicit payload size, range, delay, loss, queue limits and ordering. Failures, EFR/ablation, metrics, replay and the later interface milestones remain pending.
