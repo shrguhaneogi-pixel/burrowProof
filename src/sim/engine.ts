@@ -19,7 +19,7 @@ import {
   type TransportEvent,
 } from "./comms";
 
-export const ENGINE_VERSION = "1b.2";
+export const ENGINE_VERSION = "1b.3";
 export const foundationPolicy = Object.freeze({
   version: "first-neighbor.1",
   decide: firstNeighbor,
@@ -29,13 +29,22 @@ export interface Policy {
   readonly decide: Planner;
 }
 export interface Config {
+  readonly failures?: readonly Failure[];
   readonly communication?: CommunicationConfig;
   readonly seed: number;
   readonly scenario: Scenario;
   readonly nodeCount: number;
   readonly agentCount: number;
 }
+export interface Failure {
+  readonly tick: number;
+  readonly agentId: number;
+}
+type Lifecycle =
+  | { readonly status: "active" }
+  | { readonly status: "failed"; readonly tick: number };
 interface Robot extends AgentState {
+  readonly lifecycle: Lifecycle;
   readonly policyRng: number;
 }
 export interface SimState {
@@ -47,6 +56,7 @@ export interface SimState {
   readonly algorithmVersion: string;
 }
 type Outcome =
+  | { kind: "agent-failed" }
   | { kind: "moved"; from: number; to: number }
   | { kind: "waited"; at: number }
   | {
@@ -63,6 +73,52 @@ export interface Transition {
   events: SimEvent[];
 }
 
+function normalizeFailures(
+  failures: readonly Failure[],
+  agentCount: number,
+): readonly Failure[] {
+  const earliest = new Map<number, number>();
+  for (const { tick, agentId } of failures) {
+    if (
+      !Number.isSafeInteger(tick) ||
+      tick < 0 ||
+      !Number.isInteger(agentId) ||
+      agentId < 0 ||
+      agentId >= agentCount
+    ) {
+      throw new RangeError("Invalid failure tick or agent ID");
+    }
+    earliest.set(agentId, Math.min(tick, earliest.get(agentId) ?? tick));
+  }
+  return Object.freeze(
+    [...earliest]
+      .map(([agentId, tick]) => Object.freeze({ tick, agentId }))
+      .sort((a, b) => a.tick - b.tick || a.agentId - b.agentId),
+  );
+}
+
+function failAtTick(
+  agents: readonly Robot[],
+  failures: readonly Failure[],
+  tick: number,
+) {
+  const due = new Set(
+    failures
+      .filter((failure) => failure.tick === tick)
+      .map((failure) => failure.agentId),
+  );
+  const events: SimEvent[] = [];
+  const next = [...agents]
+    .sort((a, b) => a.id - b.id)
+    .map((agent): Robot => {
+      if (!due.has(agent.id) || agent.lifecycle.status === "failed")
+        return agent;
+      events.push({ kind: "agent-failed", tick, agentId: agent.id });
+      return { ...agent, lifecycle: { status: "failed", tick } };
+    });
+  return { agents: next, events };
+}
+
 export function initialize(
   config: Config,
   policy: Policy = foundationPolicy,
@@ -75,6 +131,7 @@ export function initialize(
       : validateCommunication(config.communication);
   if (!Number.isInteger(agentCount) || agentCount < 1 || agentCount > 256)
     throw new RangeError("Agent count must be an integer from 1 to 256");
+  const failures = normalizeFailures(config.failures ?? [], agentCount);
   const world = fixture
     ? createWorld(fixture.adjacency)
     : generateWorld(seed, scenario, nodeCount);
@@ -82,16 +139,26 @@ export function initialize(
     throw new RangeError("World size disagrees with configuration");
   const at = world.entrance,
     neighbors = world.adjacency[at]!;
-  const agents = Array.from({ length: agentCount }, (_, id) => ({
-    ...spawnAgent(id, at, neighbors),
+  const unsensed: Robot[] = Array.from({ length: agentCount }, (_, id) => ({
+    id,
+    position: at,
+    knowledge: { visited: [], adjacency: {} },
+    lifecycle: { status: "active" },
     policyRng: streamSeed(seed, `policy/${id}`),
   }));
+  const initial = failAtTick(unsensed, failures, 0);
+  const agents = initial.agents.map((agent) =>
+    agent.lifecycle.status === "failed"
+      ? agent
+      : { ...agent, ...spawnAgent(agent.id, at, neighbors) },
+  );
   const state = {
     config: {
       seed,
       scenario,
       nodeCount,
       agentCount,
+      failures,
       ...(communication === undefined ? {} : { communication }),
     },
     ...(communication === undefined
@@ -104,13 +171,18 @@ export function initialize(
   };
   return {
     state,
-    events: agents.map(({ id }) => ({
-      tick: 0,
-      agentId: id,
-      kind: "sensed",
-      at,
-      neighbors,
-    })),
+    events: [
+      ...initial.events,
+      ...agents
+        .filter((agent) => agent.lifecycle.status === "active")
+        .map(({ id }): SimEvent => ({
+          tick: 0,
+          agentId: id,
+          kind: "sensed",
+          at,
+          neighbors,
+        })),
+    ],
   };
 }
 
@@ -118,7 +190,7 @@ function validate(
   agent: AgentState,
   action: Action,
   world: World,
-): Exclude<Outcome, { kind: "sensed" }> {
+): Exclude<Outcome, { kind: "sensed" | "agent-failed" }> {
   const at = agent.position;
   if (action?.kind === "wait") return { kind: "waited", at };
   if (action?.kind !== "move" || !Number.isSafeInteger(action.to)) {
@@ -141,11 +213,17 @@ export function step(
   const tick = state.tick + 1;
   if (!Number.isSafeInteger(tick))
     throw new RangeError("Tick exceeds safe integer range");
+  const failures = failAtTick(state.agents, state.config.failures ?? [], tick);
+  const failedIds = new Set(
+    failures.agents
+      .filter((agent) => agent.lifecycle.status === "failed")
+      .map((agent) => agent.id),
+  );
   const delivery = state.transport
-    ? deliverDue(state.transport, tick)
+    ? deliverDue(state.transport, tick, failedIds)
     : undefined;
-  const decisions = [...state.agents]
-    .sort((a, b) => a.id - b.id)
+  const decisions = failures.agents
+    .filter((agent) => agent.lifecycle.status === "active")
     .map((agent) => {
       const sample = draw(agent.policyRng);
       const view = observe(
@@ -162,15 +240,21 @@ export function step(
     });
   const events: SimEvent[] = [];
   const arrivals: SimEvent[] = [];
-  const agents = decisions.map(({ agent, policyRng, action }) => {
-    const outcome = validate(agent, action, state.world);
-    events.push({ tick, agentId: agent.id, ...outcome });
-    if (outcome.kind !== "moved") return { ...agent, policyRng };
-    const at = outcome.to,
-      neighbors = state.world.adjacency[at]!;
-    arrivals.push({ tick, agentId: agent.id, kind: "sensed", at, neighbors });
-    return { ...arrive(agent, at, neighbors), policyRng };
-  });
+  const updates = new Map(
+    decisions.map(({ agent, policyRng, action }): [number, Robot] => {
+      const outcome = validate(agent, action, state.world);
+      events.push({ tick, agentId: agent.id, ...outcome });
+      if (outcome.kind !== "moved") return [agent.id, { ...agent, policyRng }];
+      const at = outcome.to,
+        neighbors = state.world.adjacency[at]!;
+      arrivals.push({ tick, agentId: agent.id, kind: "sensed", at, neighbors });
+      return [
+        agent.id,
+        { ...agent, ...arrive(agent, at, neighbors), policyRng },
+      ];
+    }),
+  );
+  const agents = failures.agents.map((agent) => updates.get(agent.id) ?? agent);
   events.push(...arrivals);
   let transport = delivery?.transport;
   if (transport && state.config.communication) {
@@ -196,7 +280,7 @@ export function step(
       agents,
       ...(transport === undefined ? {} : { transport }),
     },
-    events: [...(delivery?.events ?? []), ...events],
+    events: [...failures.events, ...(delivery?.events ?? []), ...events],
   };
 }
 

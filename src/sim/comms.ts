@@ -25,7 +25,7 @@ export type TransportEvent =
       agentId: number;
       message: Message;
       bytes: number;
-      reason: "range" | "loss" | "queue-full";
+      reason: "range" | "loss" | "queue-full" | "recipient-failed";
     };
 
 export function validateCommunication(
@@ -72,6 +72,7 @@ function compare(a: Message, b: Message): number {
 export function deliverDue(
   state: TransportState,
   tick: number,
+  failedRecipients: ReadonlySet<number> = new Set(),
 ): { transport: TransportState; events: TransportEvent[] } {
   const inboxes: Message[][] = state.inboxes.map(() => []);
   const queue: Message[] = [];
@@ -79,6 +80,17 @@ export function deliverDue(
   for (const message of [...state.queue].sort(compare)) {
     if (message.dueTick > tick) {
       queue.push(message);
+      continue;
+    }
+    if (failedRecipients.has(message.to)) {
+      events.push({
+        kind: "message-dropped",
+        tick,
+        agentId: message.from,
+        message,
+        bytes: messageBytes(message),
+        reason: "recipient-failed",
+      });
       continue;
     }
     inboxes[message.to]!.push(message);

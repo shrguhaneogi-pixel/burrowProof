@@ -13,12 +13,29 @@ export function serializeState(state: SimState): string {
         .map(Number)
         .sort((a, b) => a - b)
         .map((id) => [id, adjacency[id]]);
-      return [agent.id, agent.position, agent.policyRng, visited, edges];
+      return [
+        agent.id,
+        agent.position,
+        agent.policyRng,
+        visited,
+        edges,
+        agent.lifecycle.status,
+        agent.lifecycle.status === "failed" ? agent.lifecycle.tick : null,
+      ];
     });
   return JSON.stringify([
     ENGINE_VERSION,
     state.algorithmVersion,
-    [seed, scenario, nodeCount, agentCount],
+    [
+      seed,
+      scenario,
+      nodeCount,
+      agentCount,
+      (state.config.failures ?? []).map((failure) => [
+        failure.tick,
+        failure.agentId,
+      ]),
+    ],
     state.tick,
     state.world.entrance,
     state.world.adjacency,
