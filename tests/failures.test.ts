@@ -6,7 +6,9 @@ import {
   type Failure,
   type Policy,
 } from "../src/sim/engine";
-import { randomWalkPolicy } from "../src/sim/policies";
+import { randomWalkPolicy, nearestFrontierPolicy } from "../src/sim/policies";
+import { createWorld, type Scenario } from "../src/sim/graph";
+import type { AgentView, Action } from "../src/sim/agent";
 import { serializeState, stateHash } from "../src/sim/state-hash";
 
 const communication = {
@@ -168,6 +170,10 @@ it.each([0, 2])(
       { kind: "agent-failed", tick, agentId: 1 },
     ]);
     expect(result.state.tick).toBe(7);
+    if (tick === 0)
+      expect(start.events.every((event) => event.kind === "agent-failed")).toBe(
+        true,
+      );
     expect(result.state.transport!.queue).toEqual([]);
     expect(result.state.transport!.inboxes).toEqual([[], []]);
     expect(
@@ -195,6 +201,48 @@ it("keeps accepted packets in flight after the sender fails", () => {
       .map((e) => e.tick),
   ).toEqual([1]);
 });
+
+it.each([randomWalkPolicy, nearestFrontierPolicy])(
+  "suppresses failed planners without transport for $version",
+  (baseline) => {
+    const policy: Policy = {
+      version: baseline.version,
+      decide(view, draw) {
+        if (view.id === 0) throw new Error("Failed planner was executed");
+        return baseline.decide(view, draw);
+      },
+    };
+    const start = initialize(
+      {
+        seed: 1,
+        scenario: "branching",
+        nodeCount: 4,
+        agentCount: 2,
+        failures: [{ tick: 1, agentId: 0 }],
+      },
+      policy,
+    ).state;
+    const result = runTicks(start, 4, policy);
+    expect(result.state.transport).toBeUndefined();
+    expect(result.state.agents[0]!.lifecycle).toEqual({
+      status: "failed",
+      tick: 1,
+    });
+    expect(
+      result.events.some(
+        (event) => event.agentId === 1 && event.kind === "moved",
+      ),
+    ).toBe(true);
+    const revived = {
+      ...result.state,
+      agents: result.state.agents.map((agent) => ({
+        ...agent,
+        lifecycle: { status: "active" as const },
+      })),
+    };
+    expect(stateHash(revived)).not.toBe(stateHash(result.state));
+  },
+);
 
 it.each([2, 3])(
   "drops due packets when the recipient failed at tick %i",
@@ -267,3 +315,194 @@ it("reclaims dropped packets before scheduling and preserves full recipient inde
     sentTick: 3,
   });
 });
+
+it("keeps a disconnected survivor's actual inputs and decisions private", () => {
+  const world = createWorld([[1], [0, 2], [1, 3], [2]]);
+  const traces = [false, true].map((fail) => {
+    const calls: { view: AgentView; draw: number; action: Action }[] = [];
+    const policy: Policy = {
+      version: "failure-canary.1",
+      decide(view, draw) {
+        const move: Action =
+          view.id === 0 && view.position < 3
+            ? { kind: "move", to: view.position + 1 }
+            : { kind: "wait" };
+        const action: Action = {
+          ...move,
+          outbound: [
+            {
+              to: 1 - view.id,
+              seq: view.tick!,
+              payload: {
+                kind: "observation",
+                node: view.position,
+                neighbors: view.adjacency[view.position]!,
+              },
+            },
+          ],
+        };
+        if (view.id === 1) calls.push({ view, draw, action });
+        return action;
+      },
+    };
+    const start = initialize(
+      {
+        ...config,
+        nodeCount: 4,
+        communication: { ...communication, range: 0 },
+        failures: fail ? [{ tick: 3, agentId: 0 }] : [],
+      },
+      policy,
+      world,
+    );
+    runTicks(start.state, 8, policy);
+    return calls;
+  });
+  expect(traces[0]).toEqual(traces[1]);
+  expect(traces[0]).toHaveLength(8);
+  for (const { view } of traces[0]!) {
+    expect(Object.keys(view).sort()).toEqual([
+      "adjacency",
+      "id",
+      "inbox",
+      "position",
+      "tick",
+      "visited",
+    ]);
+    expect(view.inbox).toEqual([]);
+    expect(view.adjacency).toEqual({ 0: [1], 1: [0] });
+  }
+});
+
+const families: Scenario[] = ["branching", "loop-heavy", "bottleneck-heavy"];
+const scenarios = families.flatMap((scenario) =>
+  Array.from({ length: 12 }, (_, seed) => ({ scenario, seed })),
+);
+for (const baseline of [randomWalkPolicy, nearestFrontierPolicy]) {
+  it.each(scenarios)(
+    `${baseline.version} failure invariants for $scenario seed=$seed`,
+    ({ scenario, seed }) => {
+      const calls: { agentId: number; tick: number }[] = [];
+      const policy: Policy = {
+        version: "failure/" + baseline.version,
+        decide(view, draw) {
+          calls.push({ agentId: view.id, tick: view.tick! });
+          return {
+            ...baseline.decide(view, draw),
+            outbound: [
+              {
+                to: (view.id + 1) % 3,
+                seq: view.tick!,
+                payload: {
+                  kind: "observation",
+                  node: view.position,
+                  neighbors: view.adjacency[view.position]!,
+                },
+              },
+            ],
+          };
+        },
+      };
+      const failures = [
+        { tick: seed % 3 === 0 ? 0 : 3, agentId: 0 },
+        { tick: 5, agentId: 1 },
+      ];
+      if (seed % 2 === 0) failures.push({ tick: 7, agentId: 2 });
+      const cfg = {
+        ...config,
+        scenario,
+        seed,
+        nodeCount: 8,
+        agentCount: 3,
+        failures,
+        communication: {
+          ...communication,
+          range: 2,
+          delay: 2,
+          loss: 0.35,
+          maxQueue: 6,
+        },
+      };
+      const initial = initialize(cfg, policy);
+      const original = serializeState(initial.state);
+      const batch = runTicks(initial.state, 12, policy);
+      let single = initialize(cfg, policy).state;
+      const events = [];
+      for (let tick = 1; tick <= 12; tick++) {
+        const snapshot = serializeState(single);
+        const next = step(single, policy);
+        expect(serializeState(single), `seed=${seed} tick=${tick}`).toBe(
+          snapshot,
+        );
+        for (const agent of single.agents) {
+          if (agent.lifecycle.status === "failed")
+            expect(next.state.agents[agent.id]).toEqual(agent);
+        }
+        events.push(...next.events);
+        single = next.state;
+      }
+      let chunked = initialize(cfg, policy).state;
+      const chunkEvents = [];
+      for (const count of [2, 0, 3, 7]) {
+        const next = runTicks(chunked, count, policy);
+        chunkEvents.push(...next.events);
+        chunked = next.state;
+      }
+      for (const [state, log] of [
+        [single, events],
+        [chunked, chunkEvents],
+      ] as const) {
+        expect(JSON.stringify(log)).toBe(JSON.stringify(batch.events));
+        expect(serializeState(state)).toBe(serializeState(batch.state));
+        expect(stateHash(state)).toBe(stateHash(batch.state));
+      }
+      const allEvents = [...initial.events, ...batch.events];
+      const forbidden = new Set([
+        "moved",
+        "waited",
+        "sensed",
+        "rejected",
+        "message-attempted",
+        "message-sent",
+        "message-delivered",
+      ]);
+      for (const failure of failures) {
+        expect(
+          calls.filter(
+            (call) =>
+              call.agentId === failure.agentId && call.tick >= failure.tick,
+          ),
+        ).toEqual([]);
+        expect(
+          allEvents.filter(
+            (event) =>
+              event.agentId === failure.agentId &&
+              event.tick >= failure.tick &&
+              forbidden.has(event.kind),
+          ),
+        ).toEqual([]);
+      }
+      expect(serializeState(initial.state)).toBe(original);
+    },
+  );
+}
+
+it.each([1, 4])(
+  "resumes snapshots with pending and effective failures at tick %i",
+  (ticks) => {
+    const initial = initialize(
+      { ...config, failures: [{ tick: 2, agentId: 0 }] },
+      talk,
+    ).state;
+    const state = runTicks(initial, ticks, talk).state;
+    const copy = JSON.parse(JSON.stringify(state)) as typeof state;
+    const result = runTicks(copy, 6, talk);
+    const expected = runTicks(state, 6, talk);
+    expect(JSON.stringify(result.events)).toBe(JSON.stringify(expected.events));
+    expect(serializeState(result.state)).toBe(serializeState(expected.state));
+    expect(stateHash(result.state)).toBe(stateHash(expected.state));
+    expect(
+      stateHash({ ...state, config: { ...state.config, failures: [] } }),
+    ).not.toBe(stateHash(state));
+  },
+);
