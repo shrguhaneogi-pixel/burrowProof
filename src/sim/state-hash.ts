@@ -1,5 +1,5 @@
 import { ENGINE_VERSION, type SimState } from "./engine";
-import { encodeMessage } from "./comms";
+import { encodeMessage, validateCommunication } from "./comms";
 import type { Announcement } from "./comms";
 import type { EfrState } from "./reservations";
 
@@ -65,7 +65,8 @@ export function serializeState(state: SimState): string {
     ...(state.transport === undefined
       ? []
       : [
-          state.config.communication,
+          state.config.communication &&
+            validateCommunication(state.config.communication),
           state.transport.queue.map(encodeMessage),
           state.transport.inboxes.map((inbox) => inbox.map(encodeMessage)),
           state.transport.lastSeq,
