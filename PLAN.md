@@ -11,7 +11,8 @@
 | P1B.3 · Robot failures | Complete | Permanent scheduled faults and message lifecycle checks below |
 | P1B.4 · EFR | Complete, independently audited | Local claim provenance, failure recovery and byte-identical replay checks below |
 | P1B.5 · No-expiry ablation | Complete | Shared expiry mode, causal divergence and matched smoke evidence below |
-| P1B · Exploration and coordination | In progress | Event-derived metrics and final headless audit remain pending |
+| P1B.6 · Event-derived metrics | Complete | Evaluator projection, pure reducer and independent fixtures below |
+| P1B · Exploration and coordination | In progress | Final headless audit remains pending |
 | P2 · Comms, failures, EFR, metrics, replay | Pending | I1–I8, at least 200 seeds, repeatable hash |
 | P3 · Mission Control | Pending | Main-path E2E, telemetry agreement, desktop/tablet/mobile captures |
 | P4 · Lab | Pending | Worker batches, matched seeds, DNF fixtures, bounded imports |
@@ -109,3 +110,11 @@ OBSERVED-RUNTIME: `python <system-skill-creator>/scripts/quick_validate.py .agen
 - **VERIFIED-REPO** · Preserved user edits in index.html, package.json and .vscode/mcp.json. The package edit changes only the dev-server port. No dependencies were added. The previously recorded development-dependency advisory remains tracked.
 - **NOT VERIFIED** · No held-out efficacy, general superiority, physical-robot validation, maximum-scale performance or cross-browser replay is established. State continuation covers trusted current-version JSON. A permanent stale claim can leave the ablation waiting through its finite run cap.
 - **NEXT** · Phase 1B.6 event-derived metrics. Define evaluator units and completion/timeout events, then verify a single aggregation path against independent fixtures. Mission Control and the full laboratory remain pending.
+
+## Phase 1B.6 handoff · 2026-11-12
+
+- **VERIFIED-REPO** · Actual baseline was clean main at f212353, aligned with origin/main. The previously outstanding authentication, dev-port and MCP changes had been committed by the user. Preserved them. Used burrowproof-simulation-audit. Implementation, contracts and twelve fixture tests are committed as b0ae014. Definitions and the full event audit are in [docs/METRICS.md](docs/METRICS.md).
+- **VERIFIED-REPO** · initialMetrics projects initialized tick-zero visitation and failures. reduceMetrics consumes complete ordered ticks and an explicit throughTick, including silent ticks. Coverage is distinct visited/reachable nodes, progress stores only changes, revisits distinguish global and per-agent arrivals, and bytes sum message-sent only. Generated-message count is null because malformed request containers are opaque. missionOutcome distinguishes running, complete, tick-cap and no-active-agents. Engine events, planners and state checksums are unchanged.
+- **OBSERVED-RUNTIME** · npm.cmd test -- tests/metrics.test.ts passed twelve tests. npm.cmd test passed 2,901 tests. npm.cmd run typecheck, npm.cmd run build, ESLint with zero warnings, changed-file Prettier and staged Git whitespace checks exited 0. npm.cmd run lint exited 1 on the now-committed pre-existing index.html formatting. An earlier concurrent verification timed out an existing ablation smoke case; standalone retries passed without changing test limits.
+- **OBSERVED-RUNTIME** · Independent fixtures cover shared starts, tick-zero failures, visitation versus discovery, four hand-counted moves with two global and one agent revisit, threshold/completion times, rejected moves, real queue/size/duplicate/loss/failed-recipient outcomes and distinct failures. All four policies across seeds 0–7 and three graph families (96 runs, 12 nodes, three agents, 24 ticks) matched incremental/full reduction and final engine visitation after reordered JSON continuation.
+- **NEXT / NOT VERIFIED** · Phase 1B.7 must audit I1–I8 jointly, metric event provenance, complete-tick ingestion boundaries, replay compatibility and failure/expiry interactions. Metrics accept trusted histories and require their tick-zero projection; a mid-run engine snapshot alone cannot reconstruct totals. Cross-browser execution, maximum-scale performance and held-out efficacy remain pending. Metrics outcomes report conditions without terminating the engine.
