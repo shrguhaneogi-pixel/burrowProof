@@ -22,11 +22,97 @@
         line-height: 1.12;
         text-wrap: balance;
       }
+      .auth-panel {
+        margin-top: 1.5rem;
+        padding: 1rem;
+        border: 1px solid #1f2c44;
+        border-radius: 0.75rem;
+        background: #0f1728;
+      }
+      .auth-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+      }
+      button {
+        border: 1px solid #4cc9f0;
+        background: #112136;
+        color: var(--text);
+        border-radius: 0.5rem;
+        padding: 0.5rem 0.85rem;
+        cursor: pointer;
+      }
+      pre {
+        background: #08101d;
+        border-radius: 0.5rem;
+        padding: 0.75rem;
+        overflow: auto;
+      }
     </style>
   </head>
   <body>
     <main>
       <h1>BurrowProof: Swarms Under Siege</h1>
+      <section class="auth-panel">
+        <div id="view-loading">Loading authentication state...</div>
+
+        <div id="view-error" hidden></div>
+
+        <div id="view-authenticated" hidden>
+          <p>Logged in as <span id="user-email"></span></p>
+          <h2>User Profile</h2>
+          <pre id="user-profile"></pre>
+          <button onclick="window.client.logout({ logoutParams: { returnTo: location.origin } })">Logout</button>
+        </div>
+
+        <div id="view-unauthenticated" class="auth-actions" hidden>
+          <button onclick="window.client.loginWithRedirect({ authorizationParams: { screen_hint: 'signup' } })">Signup</button>
+          <button onclick="window.client.loginWithRedirect()">Login</button>
+        </div>
+      </section>
     </main>
+    <script src="https://cdn.auth0.com/js/auth0-spa-js/2.18/auth0-spa-js.production.js"></script>
+    <script>
+      const displayView = function (name) {
+        ["loading", "error", "authenticated", "unauthenticated"].forEach(function (viewName) {
+          document.getElementById("view-" + viewName).hidden = viewName !== name;
+        });
+      };
+
+      const setTextContent = function (id, content) {
+        document.getElementById(id).textContent = content;
+      };
+
+      (async function () {
+        window.client = await auth0.createAuth0Client({
+          domain: "dev-shrguhaneogi.us.auth0.com",
+          clientId: "lCLXevw73DApOhhBxfWMD9DbzNqYFkvh",
+          authorizationParams: { redirect_uri: location.origin }
+        });
+
+        if (location.search.includes("error=")) {
+          const params = new URLSearchParams(location.search);
+          setTextContent("view-error", "Error: " + params.get("error") + " - " + params.get("error_description"));
+          displayView("error");
+          history.replaceState({}, "", location.pathname);
+          return;
+        }
+
+        if (location.search.includes("code=") && location.search.includes("state=")) {
+          await window.client.handleRedirectCallback();
+          history.replaceState({}, "", location.pathname);
+        }
+
+        if (await window.client.isAuthenticated()) {
+          const user = await window.client.getUser();
+          setTextContent("user-email", user && user.email ? user.email : "");
+          setTextContent("user-profile", JSON.stringify(user, null, 2));
+          displayView("authenticated");
+          return;
+        }
+
+        displayView("unauthenticated");
+      })();
+    </script>
   </body>
 </html>
