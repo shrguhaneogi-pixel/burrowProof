@@ -218,3 +218,122 @@ it("still applies ownership, releases, supersession, visited targets and sequenc
   ]);
   expect(late.memory.received[0]?.claim).toBeNull();
 });
+
+it("sends pending claims and completion releases beyond their nominal deadline", () => {
+  const cfg = {
+    ...config,
+    agentCount: 3,
+    efr: { ttl: 1 },
+    failures: [],
+    communication: { ...radio, maxOutbound: 1 },
+  };
+  const result = runTicks(
+    initialize(cfg, efrNoExpiryPolicy, corridor).state,
+    16,
+    efrNoExpiryPolicy,
+  );
+  const lateClaims = result.events.filter(
+    (e) =>
+      e.kind === "message-sent" &&
+      e.message.from === 0 &&
+      e.message.payload.kind === "claim" &&
+      e.message.payload.target === 6 &&
+      e.tick >= e.message.payload.expiresTick,
+  );
+  expect(lateClaims.length).toBeGreaterThan(0);
+  expect(result.events).toContainEqual(
+    expect.objectContaining({
+      kind: "message-delivered",
+      message: expect.objectContaining({
+        from: 0,
+        payload: { kind: "claim", target: 6, issuedTick: 6, expiresTick: 7 },
+      }),
+    }),
+  );
+  expect(result.events).toContainEqual(
+    expect.objectContaining({
+      kind: "message-sent",
+      tick: 12,
+      message: expect.objectContaining({
+        from: 0,
+        payload: { kind: "release", target: 6, issuedTick: 6 },
+      }),
+    }),
+  );
+  expect(result.events.filter((e) => e.kind === "message-rejected")).toEqual(
+    [],
+  );
+  for (const agent of result.state.agents)
+    expect(agent.efr!.pending.every((row) => row.length <= 2)).toBe(true);
+});
+
+it.each([efrPolicy, efrNoExpiryPolicy])(
+  "preserves failure suppression, loss and exhaustion for $version",
+  (policy) => {
+    const allFailed = initialize(
+      {
+        ...config,
+        failures: [
+          { agentId: 0, tick: 0 },
+          { agentId: 1, tick: 0 },
+        ],
+      },
+      policy,
+      corridor,
+    );
+    const after = runTicks(allFailed.state, 8, policy);
+    expect(after.state.tick).toBe(8);
+    expect(after.events).toEqual([]);
+    expect(after.state.agents).toEqual(allFailed.state.agents);
+    const lost = runTicks(
+      initialize(
+        { ...config, failures: [], communication: { ...radio, loss: 1 } },
+        policy,
+        corridor,
+      ).state,
+      16,
+      policy,
+    );
+    expect(lost.events.some((e) => e.kind === "message-delivered")).toBe(false);
+    expect(
+      lost.events.some(
+        (e) => e.kind === "message-dropped" && e.reason === "loss",
+      ),
+    ).toBe(true);
+    const idle = runTicks(
+      initialize({ ...config, nodeCount: 1, failures: [] }, policy).state,
+      3,
+      policy,
+    );
+    expect(idle.events).toHaveLength(6);
+    expect(idle.events.every((e) => e.kind === "waited")).toBe(true);
+  },
+);
+
+it("retains conflict priority and bounded waiting for overlapping permanent claims", () => {
+  const claims = {
+    ...held(),
+    received: [
+      held().received[0]!,
+      {
+        seq: 0,
+        latestIssue: 2,
+        claim: { ...lease, issuedTick: 2, expiresTick: 6 },
+      },
+      null,
+    ],
+  };
+  const result = choose(efrNoExpiryPolicy, 10, claims, [], [0, 3]);
+  expect(result.action.kind).toBe("wait");
+  expect(result.memory.received.filter((e) => e?.claim)).toHaveLength(2);
+  const own = {
+    ...emptyEfr(3),
+    own: { ...lease, issuedTick: 2, expiresTick: 6 },
+  };
+  const earlier = choose(efrNoExpiryPolicy, 10, own, [packet(lease, 10)]);
+  expect(earlier.memory.own?.target).toBe(3);
+  const tied = choose(efrNoExpiryPolicy, 10, { ...own, own: lease }, [
+    packet(lease, 10),
+  ]);
+  expect(tied.memory.own?.target).toBe(3);
+});
