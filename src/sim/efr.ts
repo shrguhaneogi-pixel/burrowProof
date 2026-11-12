@@ -7,19 +7,27 @@ import {
   type MessageRequest,
 } from "./comms";
 import { frontierRoutes } from "./frontiers";
-import type { EfrView, EfrState, Receipt } from "./reservations";
+import {
+  claimExpired,
+  type ReservationExpiry,
+  type EfrView,
+  type EfrState,
+  type Receipt,
+} from "./reservations";
 
 function receive(
   view: AgentView,
   local: EfrView,
   tick: number,
+  expiry: ReservationExpiry,
 ): (Receipt | null)[] {
   const frontier = (id: number) =>
     view.adjacency[id] !== undefined && !view.visited.includes(id);
   const received = local.memory.received.map((entry) => {
     if (
       entry?.claim &&
-      (entry.claim.expiresTick <= tick || !frontier(entry.claim.target))
+      (claimExpired(entry.claim.expiresTick, tick, expiry) ||
+        !frontier(entry.claim.target))
     )
       return { ...entry, claim: null };
     return entry;
@@ -37,7 +45,7 @@ function receive(
       seq < 0 ||
       message.dueTick !== tick ||
       message.sentTick >= tick ||
-      !validAnnouncement(payload, message.sentTick, local.ttl)
+      !validAnnouncement(payload, message.sentTick, local.ttl, expiry)
     )
       continue;
     const previous = received[from];
@@ -52,7 +60,7 @@ function receive(
         claim = null;
     } else if (
       payload.issuedTick > latestIssue &&
-      payload.expiresTick > tick &&
+      !claimExpired(payload.expiresTick, tick, expiry) &&
       frontier(payload.target)
     ) {
       claim = payload;
@@ -87,15 +95,18 @@ function announce(
   previous: Claim | null,
   own: Claim | null,
   tick: number,
+  expiry: ReservationExpiry,
 ) {
   const pending = local.memory.pending.map((row) =>
-    row.filter((item) => item.issuedTick + local.ttl > tick),
+    row.filter(
+      (item) => !claimExpired(item.issuedTick + local.ttl, tick, expiry),
+    ),
   );
   if (own !== previous) {
     for (const [peer, row] of pending.entries()) {
       if (peer === id) continue;
       const release: Announcement | undefined =
-        previous && previous.expiresTick > tick
+        previous && !claimExpired(previous.expiresTick, tick, expiry)
           ? {
               kind: "release",
               target: previous.target,
@@ -129,55 +140,62 @@ function announce(
   return { pending, nextSeq, cursor, outbound };
 }
 
-export const efrPolicy = Object.freeze<Policy>({
-  version: "efr.1",
-  usesEfr: true,
-  decide(view) {
-    const local = view.efr,
-      tick = view.tick;
-    if (!local || tick === undefined)
-      throw new Error("EFR requires an initialized local view");
-    const received = receive(view, local, tick);
-    const foreign = winners(received);
-    const previous = local.memory.own;
-    const routes = [...frontierRoutes(view)].filter(
-      (route) => route.target !== view.position,
-    );
-    let own = previous;
-    let route = routes.find((route) => route.target === own?.target);
-    const rival = own && foreign.get(own.target);
-    if (
-      !own ||
-      own.expiresTick <= tick ||
-      !route ||
-      (rival &&
-        (rival.issuedTick < own.issuedTick ||
-          (rival.issuedTick === own.issuedTick && rival.issuer < view.id)))
-    ) {
-      route = routes.find((candidate) => !foreign.has(candidate.target));
-      own = null;
-      if (route) {
-        const expiresTick = tick + local.ttl;
-        if (!Number.isSafeInteger(expiresTick))
-          throw new RangeError("EFR expiry exceeds safe tick range");
-        own = {
-          kind: "claim",
-          target: route.target,
-          issuedTick: tick,
-          expiresTick,
-        };
+function createEfrPolicy(expiry: ReservationExpiry): Policy {
+  return Object.freeze<Policy>({
+    version: expiry === "enforced" ? "efr.1" : "efr-no-expiry.1",
+    reservationExpiry: expiry,
+    usesEfr: true,
+    decide(view) {
+      const local = view.efr,
+        tick = view.tick;
+      if (!local || tick === undefined)
+        throw new Error("EFR requires an initialized local view");
+      const received = receive(view, local, tick, expiry);
+      const foreign = winners(received);
+      const previous = local.memory.own;
+      const routes = [...frontierRoutes(view)].filter(
+        (route) => route.target !== view.position,
+      );
+      let own = previous;
+      let route = routes.find((route) => route.target === own?.target);
+      const rival = own && foreign.get(own.target);
+      if (
+        !own ||
+        claimExpired(own.expiresTick, tick, expiry) ||
+        !route ||
+        (rival &&
+          (rival.issuedTick < own.issuedTick ||
+            (rival.issuedTick === own.issuedTick && rival.issuer < view.id)))
+      ) {
+        route = routes.find((candidate) => !foreign.has(candidate.target));
+        own = null;
+        if (route) {
+          const expiresTick = tick + local.ttl;
+          if (!Number.isSafeInteger(expiresTick))
+            throw new RangeError("EFR expiry exceeds safe tick range");
+          own = {
+            kind: "claim",
+            target: route.target,
+            issuedTick: tick,
+            expiresTick,
+          };
+        }
       }
-    }
-    const { outbound, ...fanout } = announce(
-      local,
-      view.id,
-      previous,
-      own,
-      tick,
-    );
-    const efr: EfrState = { own, received, ...fanout };
-    return route
-      ? { kind: "move", to: route.firstStep, efr, outbound }
-      : { kind: "wait", efr, outbound };
-  },
-});
+      const { outbound, ...fanout } = announce(
+        local,
+        view.id,
+        previous,
+        own,
+        tick,
+        expiry,
+      );
+      const efr: EfrState = { own, received, ...fanout };
+      return route
+        ? { kind: "move", to: route.firstStep, efr, outbound }
+        : { kind: "wait", efr, outbound };
+    },
+  });
+}
+
+export const efrPolicy = createEfrPolicy("enforced");
+export const efrNoExpiryPolicy = createEfrPolicy("disabled");

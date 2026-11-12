@@ -15,6 +15,7 @@ import {
   normalizeTtl,
   snapshotEfr,
   type EfrState,
+  type ReservationExpiry,
 } from "./reservations";
 import {
   deliverDue,
@@ -32,6 +33,7 @@ export const foundationPolicy = Object.freeze({
   decide: firstNeighbor,
 });
 export interface Policy {
+  readonly reservationExpiry?: ReservationExpiry;
   readonly usesEfr?: true;
   readonly version: string;
   readonly decide: Planner;
@@ -304,6 +306,7 @@ export function step(
       tick,
       state.config.seed,
       state.config.efr?.ttl,
+      policy.reservationExpiry,
     );
     transport = outgoing.transport;
     events.push(...outgoing.events);

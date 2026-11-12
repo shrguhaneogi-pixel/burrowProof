@@ -2,7 +2,12 @@
 import type { AgentView } from "./agent";
 import type { World } from "./graph";
 import { draw, streamSeed } from "./rng";
-import { copyAnnouncement, DEFAULT_TTL } from "./reservations";
+import {
+  claimExpired,
+  copyAnnouncement,
+  DEFAULT_TTL,
+  type ReservationExpiry,
+} from "./reservations";
 
 export type TransportEvent =
   | {
@@ -175,6 +180,7 @@ export function validAnnouncement(
   payload: Announcement,
   sentTick: number,
   ttl: number,
+  expiry: ReservationExpiry = "enforced",
 ): boolean {
   if (
     !Number.isSafeInteger(sentTick) ||
@@ -193,7 +199,7 @@ export function validAnnouncement(
     keys === "expiresTick,issuedTick,kind,target" &&
     Number.isSafeInteger(payload.expiresTick) &&
     payload.expiresTick === payload.issuedTick + ttl &&
-    sentTick < payload.expiresTick
+    !claimExpired(payload.expiresTick, sentTick, expiry)
   );
 }
 
@@ -223,11 +229,12 @@ function validPayload(
   view: AgentView,
   tick: number,
   ttl: number,
+  expiry: ReservationExpiry,
 ): boolean {
   if (!payload) return false;
   if (payload.kind === "observation") return validObservation(payload, view);
   return (
-    validAnnouncement(payload, tick, ttl) &&
+    validAnnouncement(payload, tick, ttl, expiry) &&
     view.adjacency[payload.target] !== undefined &&
     (payload.kind === "release" ||
       (!view.visited.includes(payload.target) &&
@@ -246,6 +253,7 @@ export function scheduleOutbound(
   tick: number,
   seed: number,
   ttl = DEFAULT_TTL,
+  expiry: ReservationExpiry = "enforced",
 ): { transport: TransportState; events: TransportEvent[] } {
   const queue = [...state.queue],
     lastSeq = [...state.lastSeq];
@@ -288,7 +296,7 @@ export function scheduleOutbound(
         reject(seq, "invalid-recipient");
         continue;
       }
-      if (!validPayload(request.payload, view, tick, ttl)) {
+      if (!validPayload(request.payload, view, tick, ttl, expiry)) {
         reject(seq, "unauthorized-payload");
         continue;
       }

@@ -1,6 +1,15 @@
 import type { Announcement, Claim } from "./comms";
 
 export const DEFAULT_TTL = 16;
+export type ReservationExpiry = "enforced" | "disabled";
+
+export function claimExpired(
+  expiresTick: number,
+  tick: number,
+  expiry: ReservationExpiry,
+): boolean {
+  return expiry === "enforced" && expiresTick <= tick;
+}
 export interface Receipt {
   readonly seq: number;
   readonly latestIssue: number;
